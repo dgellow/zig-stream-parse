@@ -1,0 +1,4 @@
+**/.claude/settings.local.json
+zig-out
+.zig-cache
+.vscode
