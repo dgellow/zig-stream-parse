@@ -27,39 +27,72 @@ pub const ByteStream = struct {
     }
 
     pub fn peek(self: *ByteStream) !?u8 {
+        // More defensive bounds checking
         if (self.exhausted or self.position >= self.content.len) {
+            self.exhausted = true; // Mark as exhausted for safety
             return null;
         }
         
-        return self.content[self.position];
+        // Double-check bounds before accessing
+        if (self.position < self.content.len) {
+            return self.content[self.position];
+        } else {
+            self.exhausted = true;
+            return null;
+        }
     }
 
     pub fn peekOffset(self: *ByteStream, offset: usize) !?u8 {
+        // Avoid integer overflow when calculating position
+        if (offset > std.math.maxInt(usize) - self.position) {
+            self.exhausted = true;
+            return null;
+        }
+        
         const pos = self.position + offset;
         if (self.exhausted or pos >= self.content.len) {
             return null;
         }
         
-        return self.content[pos];
+        // Double-check bounds for safety
+        if (pos < self.content.len) {
+            return self.content[pos];
+        } else {
+            return null;
+        }
     }
 
     pub fn consume(self: *ByteStream) !?u8 {
+        // Check if already exhausted or at end
         if (self.exhausted or self.position >= self.content.len) {
             self.exhausted = true;
             return null;
         }
 
-        const byte = self.content[self.position];
-        self.position += 1;
+        // Double-check position before accessing content
+        if (self.position < self.content.len) {
+            const byte = self.content[self.position];
+            
+            // Update position safely
+            if (self.position < std.math.maxInt(usize)) {
+                self.position += 1;
+            } else {
+                self.exhausted = true;
+            }
 
-        if (byte == '\n') {
-            self.line += 1;
-            self.column = 1;
+            // Update line and column tracking
+            if (byte == '\n') {
+                self.line += 1;
+                self.column = 1;
+            } else {
+                self.column += 1;
+            }
+
+            return byte;
         } else {
-            self.column += 1;
+            self.exhausted = true;
+            return null;
         }
-
-        return byte;
     }
 
     pub fn consumeIf(self: *ByteStream, expected: u8) !bool {

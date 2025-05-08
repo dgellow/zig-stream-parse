@@ -12,16 +12,18 @@ A streaming parser framework implemented in Zig that enables efficient processin
 - **Clean API**: Consistent interface for defining and using parsers
 - **State Machine Based**: Precise control over parsing logic
 - **Event-Driven Architecture**: Generate events during parsing for reactive applications
+- **Robust Error Handling**: Rich error context, recovery strategies, and configurable parsing modes
 
 ## Components
 
-ZigParse consists of five main components:
+ZigParse consists of six main components:
 
 1. **ByteStream**: Manages input from various sources with position tracking
 2. **Tokenizer**: Converts raw bytes into meaningful tokens
 3. **StateMachine**: Tracks parsing context and handles transitions
 4. **EventEmitter**: Generates events based on parsed content
-5. **Parser**: Orchestrates the entire parsing process
+5. **ErrorReporter**: Provides rich error context and recovery mechanisms
+6. **Parser**: Orchestrates the entire parsing process
 
 ## Usage
 
@@ -131,6 +133,9 @@ The repository includes the following examples:
 
 1. **Simple Example**: A basic word and number tokenizer
 2. **CSV Parser**: A more complex example for parsing CSV data
+3. **Error Handling Example**: Demonstrates the error handling capabilities
+4. **Error Aggregation Example**: Shows intelligent grouping of related errors
+5. **Error Visualization Example**: Displays source code snippets with error markers
 
 To run the examples:
 
@@ -140,7 +145,129 @@ zig build run-simple
 
 # Run the CSV parser example
 zig build run-csv
+
+# Run the error handling example
+zig build run-error-example
+
+# Run the error aggregation example
+zig build run-error-aggregation
+
+# Run the error visualization example
+zig build run-error-visualization
 ```
+
+## Error Handling
+
+ZigParse provides a comprehensive error handling system with:
+
+1. **Context-Rich Errors**: Detailed position, token, and state information for precise error reporting
+2. **Error Categories**: Lexical, syntax, semantic, internal, and I/O error types
+3. **Recovery Strategies**: Multiple approaches to recover from parsing errors
+4. **Error Aggregation**: Intelligent grouping of related errors to reduce noise
+5. **Error Visualization**: Source code snippets with error position highlighting
+6. **Parsing Modes**:
+   - **Normal**: Collect errors and recover where possible
+   - **Strict**: Stop on first error
+   - **Lenient**: Aggressive recovery for user inputs
+   - **Validation**: Collect all errors without recovery
+
+Example with error handling:
+
+```zig
+// Configure error recovery
+const recovery_config = .{
+    .strategy = .synchronize,
+    .sync_token_types = &sync_tokens,
+    .max_errors = 10,
+};
+
+// Create parser with error handling
+var parser = try Parser.init(
+    allocator,
+    input,
+    tokenizer_config,
+    state_machine_config,
+    buffer_size,
+    .normal  // parsing mode
+);
+defer parser.deinit();
+
+// Parse with error handling
+parser.parse() catch |err| {
+    std.debug.print("Parsing failed: {any}\n", .{err});
+    try parser.printErrors();
+};
+
+// Get error information
+if (parser.hasErrors()) {
+    for (parser.getErrors()) |error_ctx| {
+        // Handle specific errors
+    }
+}
+```
+
+### Error Aggregation
+
+The error aggregation system intelligently groups related errors to reduce noise and help identify root causes:
+
+```zig
+// Create an error aggregator
+var aggregator = ErrorAggregator.init(allocator);
+defer aggregator.deinit();
+
+// Parse and collect errors
+parser.parse() catch |err| {
+    // Get all errors from the parser
+    const errors = parser.getErrors();
+    
+    // Report each error to the aggregator
+    for (errors) |error_ctx| {
+        try aggregator.report(error_ctx);
+    }
+    
+    // Print aggregated errors with related groups
+    try aggregator.printAll();
+};
+```
+
+The aggregator automatically groups errors that are likely related, such as:
+- Multiple syntax errors on the same line
+- Missing tokens and unexpected tokens that occur close together
+- Cascading errors that result from a single root cause
+
+### Error Visualization
+
+The error visualization system displays source code snippets with highlighted error positions:
+
+```zig
+// Create a visualizer
+var visualizer = try ErrorVisualizer.init(
+    allocator,
+    source_code,
+    .{ .use_colors = true } // Colorized output
+);
+defer visualizer.deinit();
+
+// Visualize errors with source context
+try visualizer.visualizeAllErrors(errors, std.io.getStdOut().writer());
+```
+
+Error visualization output example:
+```
+error at line 2, column 19:
+type_mismatch: Cannot add number and string
+
+ 1 | function example() {
+ 2 |     let x = 10;
+ 3 |     let y = "hello";
+ 4 |     return x + y;
+          ^
+ 5 | }
+
+ Hint: Convert the string to a number or use string concatenation
+```
+
+See the [Error Handling Documentation](docs/error_handling.md) for more details.
 
 ## Benchmarks
 

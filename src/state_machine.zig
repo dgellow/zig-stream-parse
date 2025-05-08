@@ -2,7 +2,7 @@ const std = @import("std");
 const Token = @import("tokenizer.zig").Token;
 const types = @import("types.zig");
 const ParserContext = types.ParserContext;
-const ActionFn = types.ActionFn;
+pub const ActionFn = types.ActionFn;
 
 pub const StateTransition = struct {
     token_id: u32,

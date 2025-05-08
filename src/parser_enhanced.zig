@@ -2,9 +2,11 @@ const std = @import("std");
 const ByteStream = @import("byte_stream.zig").ByteStream;
 const Tokenizer = @import("tokenizer.zig").Tokenizer;
 const TokenType = @import("tokenizer.zig").TokenType;
+const Token = @import("tokenizer.zig").Token;
 const TokenMatcher = @import("tokenizer.zig").TokenMatcher;
-const StateMachine = @import("state_machine.zig").StateMachine;
-const State = @import("state_machine.zig").State;
+const StateMachine = @import("state_machine_enhanced.zig").StateMachine;
+const State = @import("state_machine_enhanced.zig").State;
+const ErrorRecoveryConfig = @import("state_machine_enhanced.zig").ErrorRecoveryConfig;
 const types = @import("types.zig");
 pub const ParserContext = types.ParserContext;
 const ActionFn = types.ActionFn;
@@ -12,6 +14,14 @@ const EventEmitter = @import("event_emitter.zig").EventEmitter;
 const Event = @import("event_emitter.zig").Event;
 const EventType = @import("event_emitter.zig").EventType;
 const EventHandler = @import("event_emitter.zig").EventHandler;
+
+// Import error handling
+const error_mod = @import("error.zig");
+const ErrorReporter = error_mod.ErrorReporter;
+const ErrorContext = error_mod.ErrorContext;
+const ErrorCode = error_mod.ErrorCode;
+const ErrorSeverity = error_mod.ErrorSeverity;
+const ErrorRecoveryStrategy = error_mod.ErrorRecoveryStrategy;
 
 pub const TokenizerConfig = struct {
     matchers: []const TokenMatcher,
@@ -22,6 +32,22 @@ pub const StateMachineConfig = struct {
     states: []const State,
     actions: []const ActionFn,
     initial_state_id: u32,
+    recovery_config: ErrorRecoveryConfig = .{},
+};
+
+/// Parse mode affects error handling and parsing behavior
+pub const ParseMode = enum {
+    /// Default mode - collect syntax errors and try to recover
+    normal,
+    
+    /// Strict mode - stop on first error
+    strict,
+    
+    /// Lenient mode - try hard to recover from errors
+    lenient,
+    
+    /// Validation mode - collect all errors without recovery
+    validation,
 };
 
 // Internal data structure - not directly exposed to users
@@ -32,10 +58,12 @@ const ParserData = struct {
     state_machine: StateMachine,
     context: ParserContext,
     event_emitter: EventEmitter,
-    error_message: ?[]u8,
-    error_code: u32,
-
-    fn init(allocator: std.mem.Allocator) !ParserData {
+    error_reporter: ErrorReporter,
+    
+    // Parsing configuration
+    parse_mode: ParseMode,
+    
+    fn init(allocator: std.mem.Allocator, parse_mode: ParseMode) !ParserData {
         return .{
             .allocator = allocator,
             .stream = null,
@@ -43,8 +71,8 @@ const ParserData = struct {
             .state_machine = undefined, // Will be initialized later
             .context = try ParserContext.init(allocator),
             .event_emitter = EventEmitter.init(allocator),
-            .error_message = null,
-            .error_code = 0,
+            .error_reporter = ErrorReporter.init(allocator),
+            .parse_mode = parse_mode,
         };
     }
 
@@ -52,16 +80,22 @@ const ParserData = struct {
         if (self.stream) |*stream| stream.deinit();
         if (self.tokenizer) |*tokenizer| tokenizer.deinit();
         self.context.deinit();
-        if (self.error_message) |msg| self.allocator.free(msg);
+        self.error_reporter.deinit();
     }
-
-    fn setError(self: *ParserData, code: u32, message: []const u8) !void {
-        if (self.error_message) |old_msg| {
-            self.allocator.free(old_msg);
-        }
-
-        self.error_code = code;
-        self.error_message = try self.allocator.dupe(u8, message);
+    
+    // Report an error through both the error reporter and event system
+    fn reportError(self: *ParserData, error_ctx: ErrorContext) !void {
+        // Report through the error reporter
+        try self.error_reporter.report(error_ctx);
+        
+        // Also emit an error event
+        var error_event = Event.init(.ERROR, error_ctx.position);
+        error_event.data = .{
+            .error_info = .{
+                .message = error_ctx.message,
+            }
+        };
+        try self.event_emitter.emit(error_event);
     }
 };
 
@@ -70,10 +104,10 @@ const ParserHandle = struct {
     id: u64,
     data: *ParserData,
 
-    fn create(allocator: std.mem.Allocator) !ParserHandle {
+    fn create(allocator: std.mem.Allocator, parse_mode: ParseMode) !ParserHandle {
         const data = try allocator.create(ParserData);
         errdefer allocator.destroy(data);
-        data.* = try ParserData.init(allocator);
+        data.* = try ParserData.init(allocator, parse_mode);
 
         // In a real implementation, we would use a handle manager
         // to track and validate handles across API boundaries
@@ -89,7 +123,7 @@ const ParserHandle = struct {
     }
 };
 
-// High-level Zig API with optimized interface
+// High-level Zig API with optimized interface and enhanced error handling
 pub const Parser = struct {
     handle: ParserHandle,
 
@@ -99,8 +133,9 @@ pub const Parser = struct {
         tokenizer_config: TokenizerConfig,
         state_machine_config: StateMachineConfig,
         buffer_size: usize,
+        parse_mode: ParseMode,
     ) !Parser {
-        var handle = try ParserHandle.create(allocator);
+        var handle = try ParserHandle.create(allocator, parse_mode);
         errdefer handle.destroy(allocator);
 
         // Initialize parser components
@@ -124,6 +159,7 @@ pub const Parser = struct {
         source: anytype,
         comptime grammar: anytype,
         buffer_size: usize,
+        parse_mode: ParseMode,
     ) !Parser {
         // Convert compile-time grammar to runtime configuration
         const tokenizer_config = comptime grammar.tokenizerConfig();
@@ -134,7 +170,8 @@ pub const Parser = struct {
             source,
             tokenizer_config,
             state_machine_config,
-            buffer_size
+            buffer_size,
+            parse_mode
         );
     }
 
@@ -154,26 +191,147 @@ pub const Parser = struct {
         // Emit start document event
         try data.event_emitter.emit(Event.init(.START_DOCUMENT, data.stream.?.getPosition()));
 
-        // Process tokens until EOF
+        // Process tokens until EOF or fatal error
         while (true) {
             const token = try data.tokenizer.?.nextToken();
             if (token == null) break; // EOF
 
-            std.debug.print("Token: {s} (id: {d})\n", .{token.?.lexeme, token.?.type.id});
+            // Process the token based on parse mode
+            try self.processToken(token.?);
             
-            // Process the token
-            try data.state_machine.transition(token.?, &data.context);
-            
-            // Free the token's lexeme memory 
-            // All token matchers now allocate proper memory for lexemes
-            data.allocator.free(token.?.lexeme);
+            // Free the token's lexeme memory (if appropriate)
+            if (self.shouldFreeToken(token.?)) {
+                data.allocator.free(token.?.lexeme);
+            }
         }
 
         // Emit end document event
         try data.event_emitter.emit(Event.init(.END_DOCUMENT, data.stream.?.getPosition()));
+        
+        // If we're in strict mode or validation mode, throw on any errors
+        switch (data.parse_mode) {
+            .strict => {
+                try data.error_reporter.throwIfErrors();
+            },
+            .validation => {
+                try data.error_reporter.throwIfErrors();
+            },
+            else => {},
+        }
     }
-
-    // For incremental parsing
+    
+    // Helper to determine if a token's memory should be freed
+    fn shouldFreeToken(self: *Parser, token: Token) bool {
+        _ = token;
+        // By default, all tokens are freed
+        // This can be overridden for special token handling
+        return true;
+    }
+    
+    // Process a token with error handling
+    fn processToken(self: *Parser, token: Token) !void {
+        // Get internal data
+        const data = self.handle.data;
+        
+        // Try to process the token through the state machine
+        data.state_machine.transition(token, &data.context) catch |err| {
+            // Handle different error types based on parse mode
+            switch (err) {
+                error.UnexpectedToken => {
+                    // The state machine already reported this error via the error reporter
+                    if (data.parse_mode == .strict) {
+                        return err;
+                    } else if (data.parse_mode == .validation) {
+                        // In validation mode, we just record errors and continue
+                        return;
+                    } else {
+                        // In normal or lenient mode, we attempt recovery
+                        try self.recoverFromError(token);
+                    }
+                },
+                error.NeedSynchronization => {
+                    // State machine needs synchronization
+                    try self.synchronizeAfterError(token);
+                },
+                error.TooManyErrors => {
+                    // Too many errors, we should stop
+                    return err;
+                },
+                else => {
+                    // Other errors are passed through
+                    return err;
+                },
+            }
+        };
+    }
+    
+    // Error recovery for unexpected tokens
+    fn recoverFromError(self: *Parser, token: Token) !void {
+        // Get internal data
+        const data = self.handle.data;
+        
+        // Recovery depends on the parse mode
+        switch (data.parse_mode) {
+            .normal => {
+                // In normal mode, we just try to skip to a sync point
+                try self.synchronizeAfterError(token);
+            },
+            .lenient => {
+                // In lenient mode, we try harder to recover
+                // First, see if we can find a valid transition from the current state
+                // to any other state, potentially skipping tokens
+                if (data.state_machine.tryTransition(token, &data.context)) {
+                    // We found a valid transition, just continue
+                    return;
+                } else {
+                    // No valid transition, just skip to a sync point
+                    try self.synchronizeAfterError(token);
+                }
+            },
+            else => {},
+        }
+    }
+    
+    // Synchronize after an error by skipping tokens until we find a sync point
+    fn synchronizeAfterError(self: *Parser, current_token: Token) !void {
+        // Get internal data
+        const data = self.handle.data;
+        
+        // Check if the current token is a sync point
+        if (data.state_machine.isSyncPoint(current_token.type.id)) {
+            // If so, we can just continue
+            return;
+        }
+        
+        // Skip tokens until we find a sync point or EOF
+        while (true) {
+            const token = try data.tokenizer.?.nextToken();
+            if (token == null) {
+                // EOF reached during recovery
+                var error_ctx = try ErrorContext.init(
+                    data.allocator,
+                    ErrorCode.unexpected_end_of_input,
+                    data.stream.?.getPosition(),
+                    "Unexpected end of input during error recovery"
+                );
+                try data.reportError(error_ctx);
+                return;
+            }
+            
+            // Free the skipped token
+            defer data.allocator.free(token.?.lexeme);
+            
+            // Check if this token is a sync point
+            if (data.state_machine.isSyncPoint(token.?.type.id)) {
+                // Found a sync point, try to recover
+                if (data.state_machine.tryTransition(token.?, &data.context)) {
+                    return;
+                }
+            }
+        }
+    }
+    
+    // For incremental parsing (no enhancements here, just copied from original)
     pub fn process(self: *Parser, chunk: []const u8) !void {
         @setEvalBranchQuota(10000);
         // Get internal data
@@ -283,11 +441,13 @@ pub const Parser = struct {
             const token = try data.tokenizer.?.nextToken();
             if (token == null) break; // No more tokens in this chunk
             
-            // Process the token
-            try data.state_machine.transition(token.?, &data.context);
+            // Process the token with error handling
+            try self.processToken(token.?);
             
-            // Free the token's lexeme memory
-            data.allocator.free(token.?.lexeme);
+            // Free the token's lexeme memory if needed
+            if (self.shouldFreeToken(token.?)) {
+                data.allocator.free(token.?.lexeme);
+            }
         }
     }
 
@@ -308,15 +468,45 @@ pub const Parser = struct {
             const token = try data.tokenizer.?.nextToken();
             if (token == null) break; // EOF
             
-            // Process the token
-            try data.state_machine.transition(token.?, &data.context);
+            // Process the token with error handling
+            try self.processToken(token.?);
             
-            // Free the token's lexeme memory
-            data.allocator.free(token.?.lexeme);
+            // Free the token's lexeme memory if needed
+            if (self.shouldFreeToken(token.?)) {
+                data.allocator.free(token.?.lexeme);
+            }
         }
         
         // Emit end document event
         try data.event_emitter.emit(Event.init(.END_DOCUMENT, data.stream.?.getPosition()));
+        
+        // If we're in strict mode or validation mode, throw on any errors
+        switch (data.parse_mode) {
+            .strict, .validation => {
+                try data.error_reporter.throwIfErrors();
+            },
+            else => {},
+        }
+    }
+    
+    // Get access to the errors
+    pub fn getErrors(self: Parser) []ErrorContext {
+        return self.handle.data.error_reporter.getErrors();
+    }
+    
+    // Get access to the warnings
+    pub fn getWarnings(self: Parser) []ErrorContext {
+        return self.handle.data.error_reporter.getWarnings();
+    }
+    
+    // Check if there are any errors
+    pub fn hasErrors(self: Parser) bool {
+        return self.handle.data.error_reporter.hasErrors();
+    }
+    
+    // Print all errors and warnings
+    pub fn printErrors(self: Parser) !void {
+        try self.handle.data.error_reporter.printAll();
     }
 };
 
@@ -344,11 +534,13 @@ fn initParserComponents(
     );
     errdefer tokenizer.deinit();
 
-    // Initialize state machine
+    // Initialize state machine with error handling
     const state_machine = StateMachine.init(
+        allocator,
         state_machine_config.states,
         state_machine_config.actions,
         state_machine_config.initial_state_id,
+        state_machine_config.recovery_config,
     );
 
     // Store components in parser data
