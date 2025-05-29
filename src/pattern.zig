@@ -46,13 +46,22 @@ pub const Pattern = union(PatternType) {
     }
 };
 
+// Static patterns to avoid pointer issues
+const alpha_pattern = Pattern{ .any_of = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" };
+const digit_pattern = Pattern{ .char_class = .digit };
+const whitespace_pattern = Pattern{ .char_class = .whitespace };
+
+const alpha_one_or_more = Pattern{ .one_or_more = &alpha_pattern };
+const digit_one_or_more = Pattern{ .one_or_more = &digit_pattern };
+const whitespace_one_or_more = Pattern{ .one_or_more = &whitespace_pattern };
+
 // Pre-defined patterns for common use cases
 pub const match = struct {
     pub const alpha_lower = Pattern{ .char_class = .alpha_lower };
     pub const alpha_upper = Pattern{ .char_class = .alpha_upper };
-    pub const alpha = Pattern{ .any_of = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" };
-    pub const digit = Pattern{ .char_class = .digit };
-    pub const whitespace = Pattern{ .char_class = .whitespace };
+    pub const alpha = alpha_pattern;
+    pub const digit = digit_pattern;
+    pub const whitespace = whitespace_pattern;
     pub const newline = Pattern{ .char_class = .newline };
     pub const punct = Pattern{ .char_class = .punct };
     pub const quote = Pattern{ .char_class = .quote };
@@ -62,14 +71,22 @@ pub const match = struct {
         .any_of = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" 
     };
     
-    pub const word = Pattern{
-        .sequence = &[_]Pattern{
-            alpha,
-            alphanumeric.zeroOrMore(),
-        },
-    };
+    // Common patterns
+    pub const word = alpha_one_or_more;
+    pub const number = digit_one_or_more;
     
-    pub const number = digit.oneOrMore();
+    // Helper functions for building patterns
+    pub fn alphaOneOrMore() Pattern {
+        return alpha_one_or_more;
+    }
+    
+    pub fn digitOneOrMore() Pattern {
+        return digit_one_or_more;
+    }
+    
+    pub fn whitespaceOneOrMore() Pattern {
+        return whitespace_one_or_more;
+    }
     
     pub fn literal(comptime str: []const u8) Pattern {
         return .{ .literal = str };

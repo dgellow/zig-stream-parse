@@ -23,9 +23,6 @@ pub const TokenStream = struct {
         line: usize,
         column: usize,
     } {
-        // Skip past any whitespace if not explicitly matching it
-        self.skipWhitespace();
-        
         if (self.pos >= self.source.len) return null;
         
         const start_line = self.line;
@@ -107,6 +104,10 @@ pub const TokenStream = struct {
     pub fn isAtEnd(self: *const TokenStream) bool {
         return self.pos >= self.source.len;
     }
+    
+    pub fn getPosition(self: *const TokenStream) struct { line: usize, column: usize } {
+        return .{ .line = self.line, .column = self.column };
+    }
 };
 
 test "token stream" {
@@ -125,15 +126,24 @@ test "token stream" {
     try std.testing.expectEqual(TokenType.word, token1.type);
     try std.testing.expectEqualStrings("hello", token1.text);
     
-    // Second token should be "123" (whitespace skipped)
+    // Second token should be " " (whitespace)
     const token2 = stream.next(TokenType, patterns).?;
-    try std.testing.expectEqual(TokenType.number, token2.type);
-    try std.testing.expectEqualStrings("123", token2.text);
+    try std.testing.expectEqual(TokenType.whitespace, token2.type);
+    try std.testing.expectEqualStrings(" ", token2.text);
     
-    // Third token should be "world"
+    // Third token should be "123"
     const token3 = stream.next(TokenType, patterns).?;
-    try std.testing.expectEqual(TokenType.word, token3.type);
-    try std.testing.expectEqualStrings("world", token3.text);
+    try std.testing.expectEqual(TokenType.number, token3.type);
+    try std.testing.expectEqualStrings("123", token3.text);
+    
+    // Fourth token should be " " (whitespace)
+    const token4 = stream.next(TokenType, patterns).?;
+    try std.testing.expectEqual(TokenType.whitespace, token4.type);
+    
+    // Fifth token should be "world"
+    const token5 = stream.next(TokenType, patterns).?;
+    try std.testing.expectEqual(TokenType.word, token5.type);
+    try std.testing.expectEqualStrings("world", token5.text);
     
     // No more tokens
     try std.testing.expect(stream.next(TokenType, patterns) == null);

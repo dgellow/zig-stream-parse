@@ -85,15 +85,9 @@ fn jsonStringPattern() zigparse.Pattern {
 
 // JSON number pattern: -?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?
 fn jsonNumberPattern() zigparse.Pattern {
-    // Simplified number pattern for now
-    return .{
-        .sequence = &[_]zigparse.Pattern{
-            // Optional minus
-            zigparse.match.literal("-").optional(),
-            // Integer part
-            zigparse.match.digit.oneOrMore(),
-        },
-    };
+    // Handle all JSON number characters including exponents
+    const number_chars = zigparse.Pattern{ .any_of = "0123456789.-+eE" };
+    return number_chars.oneOrMore();
 }
 
 /// Zero-allocation JSON parser that emits events
