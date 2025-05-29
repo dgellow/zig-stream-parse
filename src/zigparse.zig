@@ -12,6 +12,14 @@ pub const matchPattern = @import("pattern.zig").matchPattern;
 // Character classification (for advanced users)
 pub const char_class = @import("char_class.zig");
 
+// Performance components
+pub const simd = @import("simd.zig").simd;
+pub const RingBuffer = @import("ring_buffer.zig").RingBuffer;
+pub const StreamingTokenizer = @import("ring_buffer.zig").StreamingTokenizer;
+
+// Pre-built parsers
+pub const json = @import("parsers/json.zig");
+
 test "simple parsing" {
     const TokenType = enum { word, number, whitespace };
     const patterns = comptime .{
